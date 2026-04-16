@@ -1,0 +1,5 @@
+replicas: 1
+
+persistence:
+  size: 5Gi
+  storageClass: vsphere-db

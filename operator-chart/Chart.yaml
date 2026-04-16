@@ -1,0 +1,3 @@
+apiVersion: v2
+name: valkey-operator
+version: 0.1.0
