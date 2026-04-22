@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-config
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+
+data:
+  valkey.conf: |
+    bind 0.0.0.0
+    protected-mode no
+    port 6379
+
+    dir /data
+    appendonly yes
+
+    maxmemory 1gb
+    maxmemory-policy allkeys-lru
+
+    loglevel {{ .Values.valkeyLogLevel }}
+
+    timeout 0
+    tcp-keepalive 300
+
+    activerehashing yes
+
+    {{- if .Values.replication.enabled }}
+    min-replicas-to-write 1
+    min-replicas-max-lag 10
+    {{- end }}
+
+    {{- if .Values.auth.enabled }}
+    requirepass {{ .Values.auth.password }}
+    masterauth {{ .Values.auth.password }}
+    user default on >{{ .Values.auth.password }} ~* &* +@all
+    {{- end }}

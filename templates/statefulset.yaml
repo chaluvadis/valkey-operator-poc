@@ -1,0 +1,111 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+
+spec:
+  serviceName: {{ include "valkey-cluster.fullname" . }}-headless
+  replicas: {{ add .Values.replication.replicas 1 }}
+
+  selector:
+    matchLabels:
+      {{- include "valkey-cluster.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: valkey
+
+  template:
+    metadata:
+      labels:
+        {{- include "valkey-cluster.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: valkey
+
+    spec:
+      serviceAccountName: {{ include "valkey-cluster.serviceAccountName" . }}
+
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+
+      containers:
+        - name: valkey
+          image: {{ include "valkey-cluster.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - containerPort: 6379
+              name: valkey
+
+          readinessProbe:
+            exec:
+              command: ["valkey-cli","-h","localhost","-p","6379","ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+          livenessProbe:
+            exec:
+              command: ["valkey-cli","-h","localhost","-p","6379","ping"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+          startupProbe:
+            exec:
+              command: ["valkey-cli","-h","localhost","-p","6379","ping"]
+            failureThreshold: 30
+            periodSeconds: 5
+
+          env:
+            - name: VALKEY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "valkey-cluster.fullname" . }}-auth
+                  key: password
+
+          command:
+            - /bin/sh
+            - -c
+            - /entrypoint/entrypoint.sh
+
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /usr/local/etc/valkey/valkey.conf
+              subPath: valkey.conf
+            - name: startup
+              mountPath: /entrypoint
+
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "valkey-cluster.fullname" . }}-config
+        - name: startup
+          configMap:
+            name: {{ include "valkey-cluster.fullname" . }}-startup
+            defaultMode: 0755
+
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: {{ include "valkey-cluster.name" . }}
+                    app.kubernetes.io/instance: {{ .Release.Name }}
+                    app.kubernetes.io/component: valkey
+                topologyKey: kubernetes.io/hostname
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}

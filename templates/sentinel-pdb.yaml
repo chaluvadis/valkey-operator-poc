@@ -1,0 +1,14 @@
+{{- if .Values.sentinel.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-sentinel
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ add (div .Values.sentinel.replicas 2) 1 }}
+  selector:
+    matchLabels:
+      {{- include "valkey-cluster.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: sentinel
+{{- end }}

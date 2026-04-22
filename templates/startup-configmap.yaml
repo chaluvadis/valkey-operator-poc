@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-startup
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+
+data:
+   entrypoint.sh: |
+     #!/bin/sh
+     set -e
+
+     # Start Valkey in background to allow pre-configuration
+     valkey-server /usr/local/etc/valkey/valkey.conf &
+
+     # Wait for Valkey to be ready to accept commands
+     until valkey-cli -a "$VALKEY_PASSWORD" ping >/dev/null 2>&1; do
+       sleep 1
+     done
+
+     # Determine pod ordinal from hostname (StatefulSet: <release>-<ordinal>)
+     POD_NAME=$(hostname)
+     ORDINAL=${POD_NAME##*-}
+
+     # If this is a replica (ordinal > 0), configure replication
+     if [ "$ORDINAL" != "0" ]; then
+       MASTER_HOST="{{ include "valkey-cluster.fullname" . }}-0.{{ include "valkey-cluster.fullname" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local"
+       echo "Configuring replicaof to $MASTER_HOST:6379"
+       # Wait for master to be reachable
+       until valkey-cli -a "$VALKEY_PASSWORD" -h "$MASTER_HOST" ping >/dev/null 2>&1; do
+         echo "Waiting for master $MASTER_HOST to be ready..."
+         sleep 2
+       done
+       valkey-cli -a "$VALKEY_PASSWORD" replicaof "$MASTER_HOST" 6379
+     fi
+
+      # Bring Valkey to foreground and replace shell process
+      wait
