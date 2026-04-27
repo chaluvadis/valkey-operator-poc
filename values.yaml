@@ -1,0 +1,77 @@
+image:
+  repository: valkey/valkey
+  tag: 9-alpine3.23
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: "valkey"
+
+replication:
+  enabled: true
+  replicas: 2
+
+sentinel:
+  enabled: true
+  replicas: 3
+  quorum: 2
+  failoverTimeout: 10000
+  downAfterMilliseconds: 5000
+  initialMasterOrdinal: 0
+  masterName: "mymaster"
+  port: 26379
+  nodePort: 32679
+  persistence:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    size: 1Gi
+    storageClass: "vsphere-db"
+
+service:
+  type: NodePort
+  port: 6379
+  nodePort: 30079
+
+auth:
+  enabled: true
+  password: "password123"
+
+persistence:
+  enabled: true
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  storageClass: "vsphere-db"
+
+resources:
+  limits:
+    cpu: "1"
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+podSecurityContext:
+  fsGroup: 1000
+  runAsUser: 1000
+  runAsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  runAsNonRoot: true
+  runAsUser: 1000
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+commonLabels: {}
+
+valkeyLogLevel: notice

@@ -1,0 +1,20 @@
+apiVersion: v2
+name: valkey-sentinel
+description: A production-ready Helm chart for Valkey with Sentinel-based high availability and automatic failover
+type: application
+version: 0.1.0
+appVersion: "9.0.0"
+home: https://valkey.io
+sources:
+  - https://github.com/valkey-io/valkey-helm.git
+  - https://valkey.io
+keywords:
+  - valkey
+  - redis
+  - sentinel
+  - database
+  - ha
+maintainers:
+  - name: Engineering
+    url: https://github.com/valkey-io
+icon: https://dyltqmyl993wv.cloudfront.net/assets/stacks/valkey/img/valkey-stack-220x234.png

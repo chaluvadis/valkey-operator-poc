@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-sentinel-config
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+
+data:
+  sentinel.conf: |
+    port {{ .Values.sentinel.port }}
+    bind 0.0.0.0
+    protected-mode no
+    dir /data
+
+    sentinel resolve-hostnames yes
+    sentinel announce-hostnames yes
+
+    sentinel monitor {{ .Values.sentinel.masterName }} {{ include "valkey-cluster.fullname" . }}-{{ .Values.sentinel.initialMasterOrdinal }}.{{ include "valkey-cluster.fullname" . }}-headless.{{ .Release.Namespace }}.svc.cluster.local {{ .Values.service.port }} {{ .Values.sentinel.quorum }}
+
+    sentinel down-after-milliseconds {{ .Values.sentinel.masterName }} {{ .Values.sentinel.downAfterMilliseconds }}
+    sentinel failover-timeout {{ .Values.sentinel.masterName }} {{ .Values.sentinel.failoverTimeout }}
+    sentinel parallel-syncs {{ .Values.sentinel.masterName }} 1
+
+    {{- if .Values.auth.enabled }}
+    sentinel auth-user {{ .Values.sentinel.masterName }} default
+    sentinel auth-pass {{ .Values.sentinel.masterName }} {{ .Values.auth.password }}
+    {{- end }}
+
+    loglevel notice
+
+  sentinel-start.sh: |
+    #!/bin/sh
+    set -e
+    cp /config/sentinel.conf /data/sentinel.conf
+    exec valkey-sentinel /data/sentinel.conf

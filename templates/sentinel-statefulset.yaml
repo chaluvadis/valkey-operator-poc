@@ -1,0 +1,98 @@
+{{- if .Values.sentinel.enabled }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-sentinel
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sentinel
+
+spec:
+  serviceName: {{ include "valkey-cluster.fullname" . }}-sentinel-headless
+  replicas: {{ .Values.sentinel.replicas }}
+
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "valkey-cluster.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: sentinel
+
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "valkey-cluster.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: sentinel
+
+    spec:
+      serviceAccountName: {{ include "valkey-cluster.serviceAccountName" . }}
+
+      terminationGracePeriodSeconds: 30
+
+      containers:
+        - name: sentinel
+          image: {{ include "valkey-cluster.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          ports:
+            - containerPort: {{ .Values.sentinel.port }}
+              name: sentinel
+
+          command:
+            - /bin/sh
+            - -c
+            - /config/sentinel-start.sh
+
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "valkey-cli -p {{ .Values.sentinel.port }} ping"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "valkey-cli -p {{ .Values.sentinel.port }} ping"
+            initialDelaySeconds: 15
+            periodSeconds: 10
+
+          volumeMounts:
+            - name: config
+              mountPath: /config
+            - name: data
+              mountPath: /data
+
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "valkey-cluster.fullname" . }}-sentinel-config
+            defaultMode: 0755
+
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: {{ include "valkey-cluster.name" . }}
+                    app.kubernetes.io/component: sentinel
+                topologyKey: kubernetes.io/hostname
+
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ "ReadWriteOnce" ]
+        resources:
+          requests:
+            storage: {{ .Values.sentinel.persistence.size | default "1Gi" }}
+        {{- if .Values.sentinel.persistence.storageClass }}
+        storageClassName: {{ .Values.sentinel.persistence.storageClass | quote }}
+        {{- end }}
+{{- end }}

@@ -1,169 +1,281 @@
-# Valkey Platform (On-Prem)
+# Valkey Helm Chart
 
-## Overview
+Helm chart for deploying Valkey (Redis-compatible) on Kubernetes with Sentinel-based high availability and automatic failover.
 
-This repository deploys Valkey on Kubernetes using a two-layer architecture:
+## Features
 
-- Valkey Operator (controller layer)
-- Valkey Cluster (CR-based workload layer)
+- **Replication Mode** - Master-replica replication with configurable replica count
+- **Sentinel HA** - Automatic failover managed by Valkey Sentinel
+- **StatefulSets** - Stable pod identity and persistent storage
+- **No Cluster Mode** - Uses replication + Sentinel (not Redis Cluster hash sharding)
+- **Authentication** - Password-based authentication
+- **Production Ready** - Security context, probes, resource limits, PodDisruptionBudget
 
-The operator manages all runtime Kubernetes resources (StatefulSets, Services, PVCs), while the cluster chart only defines the Valkey Custom Resource.
-
-## Repository Structure
+## Architecture
 
 ```
-valkey-platform/
-├── operator-chart/     # Installs Valkey operator
-├── cluster-chart/      # Deploys Valkey cluster (CR only)
-└── environments/       # Environment-specific values
+┌──────────────────────────────────────────────────────────────┐
+│                    Valkey + Sentinel HA                      │
+│                                                              │
+│  ┌─────────────────────────────────────────────────────────┐ │
+│  │                 Sentinel (3 replicas)                   │ │
+│  │  Monitors master, performs failover, manages clients    │ │
+│  └─────────────────────────────────────────────────────────┘ │
+│                            │                                 │
+│                            ▼                                 │
+│  ┌──────────────────┐    ┌──────────────────┐                │
+│  │     Master       │◄───│     Replica 1    │                │
+│  │   (valkey-0)     │    │   (valkey-1)     │                │
+│  └──────────────────┘    └──────────────────┘                │
+│           │                        │                         │
+│           └───────────┬────────────┘                         │
+│                       ▼                                      │
+│              ┌──────────────────┐                            │
+│              │     Replica 2    │                            │
+│              │   (valkey-2)     │                            │
+│              └──────────────────┘                            │
+│                                                              │
+│  Services:                                                   │
+│  - valkey-sentinel:26379 (Sentinel for client discovery)     │
+│  - valkey-headless:6379 (StatefulSet DNS)                    │
+│  - valkey:6379 (headless, for pod discovery)                 │
+└──────────────────────────────────────────────────────────────┘
 ```
+
+## How It Works
+
+### Startup
+
+1. Pod-0 starts as master (`valkey-server` with configuration including auth and replication settings)
+2. Pods 1,2 start as replicas and use the startup script to:
+   - Wait for the master (valkey-0) to be ready
+   - Discover the master's address via DNS (`valkey-0.valkey-headless`)
+   - Configure themselves as replicas using `REPLICAOF <master-host> 6379`
+3. Sentinel pods start and begin monitoring the master's health
+4. All components use their respective ConfigMaps for configuration
+
+### Failover
+
+1. Sentinel continuously monitors the master's availability
+2. When master failure is detected (after `down-after-milliseconds`):
+   - Sentinels coordinate to agree on the failure
+   - One sentinel is elected leader to orchestrate failover
+   - The leader promotes a replica to master
+   - The former master is configured as a replica when it comes back online
+3. Sentinel updates its internal state with the new master information
+4. Clients discover the new master by querying Sentinel:
+   - `SENTINEL GETMASTER-ADDR-BY-NAME <master-name>`
+   - Returns the IP and port of the current master
+5. Clients then reconnect directly to the new master for operations
 
 ## Prerequisites
 
-- Kubernetes cluster (1.24+ recommended)
-- kubectl configured
+- Kubernetes 1.19+
 - Helm 3+
-- Namespace: `valkey`
+- Valkey image that includes `valkey-sentinel` (valkey/valkey:9+)
 
-## Important Notes
+## Installation
 
-- The operator is installed from a pinned `install.yaml`
-  Source:
-  [https://github.com/hyperspike/valkey-operator/releases/download/v0.0.61/install.yaml](https://github.com/hyperspike/valkey-operator/releases/download/v0.0.61/install.yaml)
-
-- Do not manually install CRDs
-
-- Do not create StatefulSets manually
-
-- All cluster resources are managed via the `Valkey` custom resource
-
-## 1. Create Namespace
+### 1. Render Templates (Dry Run)
 
 ```bash
-kubectl create namespace valkey
+helm template valkey ./valkey
 ```
 
-## 2. Install Valkey Operator
-
-This installs the operator using the upstream `install.yaml` bundled inside the Helm chart.
+### 2. Install the Chart
 
 ```bash
-helm install valkey-operator ./operator-chart \
-  -n valkey
+# Install with default values
+helm install valkey ./valkey -n valkey --create-namespace
+
+# Install with custom password
+helm install valkey ./valkey -n valkey --set auth.password=yourpassword
+
+# Install with custom master name
+helm install valkey ./valkey -n valkey --set sentinel.masterName=custommaster
 ```
 
-### Verify operator installation
+### 3. Verify Deployment
 
 ```bash
-kubectl get pods -n valkey
-kubectl get crds | grep valkey
+# Check pod status
+kubectl get pods -n valkey -l app.kubernetes.io/instance=valkey
+
+# Check Sentinel status
+kubectl exec -it valkey-0 -n valkey -- valkey-cli -h localhost -p 26379 info sentinel
+
+# Check replication
+kubectl exec -it valkey-0 -n valkey -- valkey-cli -h localhost -p 6379 info replication
 ```
 
-## 3. Install Valkey Cluster (CR)
-
-Once the operator is running, deploy the Valkey cluster:
+### 4. Connect to Valkey
 
 ```bash
-helm install valkey-cluster ./cluster-chart \
-  -n valkey \
-  -f environments/dev.yaml
+# Port forward for local access
+kubectl port-forward svc/valkey-sentinel 26379:26379 -n valkey &
+kubectl port-forward svc/valkey-0 6379:6379 -n valkey &
+
+# Test Sentinel connection (using default master name 'mymaster')
+valkey-cli -h localhost -p 26379 sentinel get-master-addr-by-name mymaster
+# To use a custom master name, replace 'mymaster' with your sentinel.masterName value
+
+# Test Valkey connection
+valkey-cli -h localhost -p 6379 -a password123 ping
 ```
 
-## 4. Upgrade Operator
-
-To upgrade the operator version:
+## Upgrading
 
 ```bash
-helm upgrade valkey-operator ./operator-chart -n valkey
+# Upgrade to a new version or update values
+helm upgrade valkey ./valkey -n valkey
 ```
 
-## 5. Upgrade Cluster Configuration
+## Removal
 
 ```bash
-helm upgrade valkey-cluster ./cluster-chart \
-  -n valkey \
-  -f environments/prod.yaml
+# Uninstall the release
+helm uninstall valkey -n valkey
+
+# Delete PVCs (optional - removes all data)
+kubectl delete pvc -l app.kubernetes.io/instance=valkey -n valkey
 ```
 
-## 6. Render Kubernetes Manifests (Debug)
-
-### Operator chart
+### Install with custom values:
 
 ```bash
-helm template valkey-operator ./operator-chart -n valkey
+helm install valkey ./valkey -n valkey -f my-values.yaml
 ```
 
-### Cluster chart
+### Service DNS Names
+
+| Service             | Port  | Purpose                                       |
+| ------------------- | ----- | --------------------------------------------- |
+| `valkey-sentinel`   | 26379 | Sentinel for client discovery                 |
+| `valkey-headless`   | 6379  | StatefulSet DNS (pod-{0,1,2}.valkey-headless) |
+| `valkey` (headless) | 6379  | Pod discovery (not for direct client use)     |
+
+### Within Same Namespace
 
 ```bash
-helm template valkey-cluster ./cluster-chart -n valkey -f environments/dev.yaml
+valkey-sentinel:26379
 ```
 
-## 7. Verify Deployment
-
-### Check operator deployment
+### From Different Namespace
 
 ```bash
-kubectl get deployment -n valkey
+valkey-sentinel.valkey.svc.cluster.local:26379
 ```
 
-### Check Valkey CR
+## Testing the Deployment
+
+### Check Sentinel Status
 
 ```bash
-kubectl get valkey -n valkey
+# Sentinel info
+kubectl exec -it valkey-0 -n valkey -- valkey-cli -h localhost -p 26379 info sentinel
+
+# List monitored masters
+kubectl exec -it valkey-0 -n valkey -- valkey-cli -h localhost -p 26379 sentinel list
 ```
 
-### Check pods created by operator
+### Client Connection
+
+Clients must use Sentinel-aware connections to automatically discover the current master and handle failovers.
+The connection requires:
+- Sentinel service address: `valkey-sentinel:26379` (within same namespace) or `valkey-sentinel.<namespace>.svc.cluster.local:26379` (cross-namespace)
+- Master name: value of `sentinel.masterName` (default: "mymaster")
+- Password: value of `auth.password` (if auth.enabled is true)
+
+**Using valkey-cli (manual discovery):**
+```bash
+# Get master address
+MASTER_INFO=$(valkey-cli -h valkey-sentinel -p 26379 sentinel get-master-addr-by-name mymaster)
+MASTER_HOST=$(echo $MASTER_INFO | cut -d' ' -f1)
+MASTER_PORT=$(echo $MASTER_INFO | cut -d' ' -f2)
+
+# Connect to master
+valkey-cli -h $MASTER_HOST -p $MASTER_PORT -a password123 ping
+```
+
+**Using Sentinel-aware client libraries:**
+Configure your client with:
+- Sentinel nodes: [valkey-sentinel:26379]
+- Master name: mymaster (or your custom sentinel.masterName)
+- Password: password123 (if enabled)
+
+Examples for popular clients are available in the [Valkey documentation](https://valkey.io/topics/clients).
+
+### Check Replication Status
 
 ```bash
-kubectl get pods -n valkey
+# Master info
+kubectl exec -it valkey-0 -n valkey -- valkey-cli -h localhost -p 6379 info replication
+
+# Replica info
+kubectl exec -it valkey-1 -n valkey -- valkey-cli -h localhost -p 6379 info replication
 ```
 
-## 8. Connect to Valkey
-
-### Get service
+### Test Failover
 
 ```bash
-kubectl get svc -n valkey
+# Get current master (replace 'mymaster' with your sentinel.masterName if changed)
+valkey-cli -h localhost -p 26379 sentinel get-master-addr-by-name mymaster
+
+# Simulate master failure (delete master pod)
+kubectl delete pod valkey-0 -n valkey
+
+# Check new master (after failover)
+valkey-cli -h localhost -p 26379 sentinel get-master-addr-by-name mymaster
 ```
 
-### Port-forward example
+### Test Connection
 
 ```bash
-kubectl port-forward svc/valkey-cluster 6379:6379 -n valkey
+# Write to master
+kubectl exec -it valkey-0 -n valkey -- valkey-cli -a password123 set testkey "Hello"
+
+# Read from replica
+kubectl exec -it valkey-1 -n valkey -- valkey-cli -h valkey-0.valkey-headless -a password123 get testkey
 ```
 
-### Connect using CLI
+## Troubleshooting
+
+### Pods Not Starting
 
 ```bash
-valkey-cli -h 127.0.0.1 -p 6379
+# Check pod events
+kubectl describe pod valkey-0 -n valkey
+
+# Check pod logs
+kubectl logs valkey-0 -n valkey
 ```
 
-## 9. Test Data
-
-Inside the CLI:
+### Sentinel Not Resolving
 
 ```bash
-SET key1 "hello valkey"
-GET key1
+# Verify Sentinel pods are running
+kubectl get pods -n valkey -l app.kubernetes.io/component=sentinel
+
+# Check Sentinel configuration
+kubectl exec -it valkey-sentinel-0 -n valkey -- cat /etc/sentinel.conf
 ```
 
-## Architecture Summary
+### Replication Not Working
 
-```
-Helm Chart (operator)
-        ↓
-install.yaml (CRDs + RBAC + Controller)
-        ↓
-Valkey Operator running
-        ↓
-Valkey CR applied (cluster-chart)
-        ↓
-Operator creates StatefulSets, PVCs, Services
+```bash
+# Check master
+kubectl exec -it valkey-0 -n valkey -- valkey-cli -h localhost -p 6379 info replication
+
+# Check replica connection
+kubectl exec -it valkey-1 -n valkey -- valkey-cli -h valkey-0.valkey-headless -p 6379 ping
 ```
 
-## Recommended Workflow
+### Failover Not Triggering
 
-- Use `operator-chart` only for platform setup
-- Use `cluster-chart` for environments (dev/stage/prod)
-- Treat the operator as an immutable infrastructure component
+```bash
+# Check Sentinel logs
+kubectl logs valkey-sentinel-0 -n valkey
+
+# Force Sentinel election (replace 'mymaster' with your sentinel.masterName if changed)
+kubectl exec -it valkey-sentinel-0 -n valkey -- valkey-cli -h localhost -p 26379 sentinel failover mymaster
+```

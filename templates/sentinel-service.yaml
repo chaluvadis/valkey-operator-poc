@@ -1,0 +1,23 @@
+{{- if .Values.sentinel.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "valkey-cluster.fullname" . }}-sentinel
+  labels:
+    {{- include "valkey-cluster.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sentinel
+
+spec:
+  type: NodePort
+
+  selector:
+    app.kubernetes.io/name: {{ include "valkey-cluster.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: sentinel
+
+  ports:
+    - name: sentinel
+      port: {{ .Values.sentinel.port }}
+      targetPort: {{ .Values.sentinel.port }}
+      nodePort: {{ .Values.sentinel.nodePort }}
+{{- end }}
